@@ -11,7 +11,7 @@ class PlaceOrderRequest extends FormRequest
      */
     public function authorize(): bool
     {
-        return false;
+        return true;
     }
 
     /**
@@ -22,7 +22,10 @@ class PlaceOrderRequest extends FormRequest
     public function rules(): array
     {
         return [
-            //
+            'symbol' => ['required', 'string', 'in:BTC,ETH'],
+            'side'   => ['required', 'string', 'in:buy,sell'],
+            'price'  => ['required', 'numeric', 'gt:0'],
+            'amount' => ['required', 'numeric', 'gt:0'],
         ];
     }
 }
