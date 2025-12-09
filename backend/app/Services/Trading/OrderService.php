@@ -26,7 +26,7 @@ class OrderService
     
     public function placeOrder(PlaceOrderDto $dto): array
     {
-        return DB::transaction(function () use ($dto) {
+        $result = DB::transaction(function () use ($dto) {
             $user = $this->users->lockById($dto->user->id);
             
             if ($dto->side === OrderSide::BUY) {
@@ -42,6 +42,23 @@ class OrderService
                 'trade' => $trade,
             ];
         });
+        
+        if ($result['trade']) {
+            $trade = $result['trade'];
+            $trade->loadMissing(['buyOrder', 'sellOrder']);
+            
+            $buyOrder = $result['trade']->buyOrder ?? null;
+            $sellOrder = $result['trade']->sellOrder ?? null;
+            
+            if ($buyOrder && $sellOrder) {
+                // Fire event outside transaction
+                event(new \App\Events\OrderMatched(
+                    trade: $trade,
+                    buyOrder: $buyOrder,
+                    sellOrder: $sellOrder,
+                ));
+            }
+        }
     }
     
     /**

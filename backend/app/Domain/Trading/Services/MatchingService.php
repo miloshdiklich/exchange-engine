@@ -138,8 +138,6 @@ class MatchingService
                 'fee_usd_seller' => $fee,
             ]);
             
-            // TODO: Dispatch trade executed / OrderMatched event here
-            
             return $trade;
         });
     }
