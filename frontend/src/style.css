@@ -1,0 +1,7 @@
+@tailwind base;
+
+/* optional global body styles */
+body {
+    background-color: rgb(15 23 42);
+    color: rgb(226 232 240);
+}
