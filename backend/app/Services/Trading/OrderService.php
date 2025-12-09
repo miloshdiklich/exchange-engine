@@ -12,6 +12,7 @@ use App\Domain\Trading\Enums\OrderSide;
 use App\Domain\Trading\Enums\OrderStatus;
 use App\Domain\Trading\Services\MatchingService;
 use App\Models\Order;
+use App\Models\User;
 use Illuminate\Support\Facades\DB;
 
 class OrderService
@@ -57,7 +58,7 @@ class OrderService
         }
         
         $user->balance = bcsub($user->balance, $requiredUsd, 8);
-        $this->user->save($user);
+        $this->users->save($user);
         
         return $this->orders->create([
             'user_id' => $user->id,

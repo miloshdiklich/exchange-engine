@@ -1,8 +1,6 @@
 <?php
 
-
 namespace App\Domain\Trading\Services;
-
 
 use App\Contracts\AssetRepositoryInterface;
 use App\Contracts\OrderRepositoryInterface;
@@ -37,7 +35,7 @@ class MatchingService
         
         $counterOrder = $this->orders->findOpenCounterOrder($incomingOrder);
         
-        if (!$counterOrder) {
+        if (! $counterOrder) {
             return null;
         }
         
@@ -47,6 +45,7 @@ class MatchingService
             return null;
         }
         
+        // full match only
         if (bccomp($incomingOrder->amount, $counterOrder->amount, 8) !== 0) {
             return null;
         }
@@ -62,50 +61,59 @@ class MatchingService
     private function executeTrade(Order $orderA, Order $orderB): Trade
     {
         if ($orderA->side === OrderSide::BUY) {
-            $buyOrder = $orderA;
+            $buyOrder  = $orderA;
             $sellOrder = $orderB;
         } else {
-            $buyOrder = $orderB;
+            $buyOrder  = $orderB;
             $sellOrder = $orderA;
         }
         
-        $price = (string) $sellOrder->price;
-        $amount = (string) $buyOrder->amount;
+        $price  = (string) $sellOrder->price;   // execution price
+        $amount = (string) $buyOrder->amount;   // matched amount
         
-        $volume = bcmul($price, $amount, 8);
-        $fee = bcmul($volume, '0.015', 8);
+        $volume = bcmul($price, $amount, 8);        // USD traded
+        $fee    = bcmul($volume, '0.015', 8);       // 1.5% fee – seller pays
         
         return DB::transaction(function () use ($buyOrder, $sellOrder, $amount, $volume, $fee, $price) {
-            $buyer = $this->users->lockById($buyOrder->user_id);
+            $buyer  = $this->users->lockById($buyOrder->user_id);
             $seller = $this->users->lockById($sellOrder->user_id);
             
-            $buyerAsset = $this->assets->lockOrCreate($buyer->id, $buyOrder->symbol);
+            $buyerAsset  = $this->assets->lockOrCreate($buyer->id, $buyOrder->symbol);
             $sellerAsset = $this->assets->lockForUserAndSymbol($seller->id, $sellOrder->symbol);
             
-            if (!$sellerAsset) {
+            if (! $sellerAsset) {
                 throw new \RuntimeException('Seller does not have the asset to sell.');
             }
             
+            // Buyer reserved limitPrice * amount when placing the BUY order
             $reserved = (string) $buyOrder->locked_usd;
-            $netCost = bcadd($volume, $fee, 8);
-            $leftover = bcsub($reserved, $netCost, 8);
             
-            if (bccomp($leftover, '0', 8) < 0) {
-                throw new \RuntimeException('Buyer has insufficient locked USD for the trade.');
+            // Buyer must at least have reserved enough to cover the traded volume
+            if (bccomp($reserved, $volume, 8) < 0) {
+                throw new \RuntimeException('Buyer has insufficient locked USD for the trade volume.');
             }
             
+            // Buyer pays exactly `volume`; leftover from reserved is refunded
+            $leftover = bcsub($reserved, $volume, 8);
+            
+            // Buyer: receive asset
             $buyerAsset->amount = bcadd($buyerAsset->amount, $amount, 8);
             $this->assets->save($buyerAsset);
             
-            $buyer->balance = bcadd($buyer->balance, $netCost, 8);
+            // Buyer: refund leftover USD (limit − execution price spread)
+            $buyer->balance = bcadd($buyer->balance, $leftover, 8);
             $this->users->save($buyer);
             
+            // Seller: release locked asset
             $sellerAsset->locked_amount = bcsub($sellerAsset->locked_amount, $amount, 8);
             $this->assets->save($sellerAsset);
             
-            $seller->balance = bcadd($seller->balance, $volume, 8);
+            // Seller: receive volume minus fee (seller pays fee)
+            $netSellerUsd = bcsub($volume, $fee, 8);
+            $seller->balance = bcadd($seller->balance, $netSellerUsd, 8);
             $this->users->save($seller);
             
+            // Orders → filled
             $buyOrder->status = OrderStatus::FILLED;
             $buyOrder->locked_usd = '0';
             $buyOrder->matched_order_id = $sellOrder->id;
@@ -116,20 +124,21 @@ class MatchingService
             $sellOrder->matched_order_id = $buyOrder->id;
             $this->orders->save($sellOrder);
             
+            // Record trade: fee on seller side
             $trade = $this->trades->create([
-                'buy_order_id' => $buyOrder->id,
-                'sell_order_id' => $sellOrder->id,
-                'buyer_id' => $buyer->id,
-                'seller_id' => $seller->id,
-                'symbol' => $buyOrder->symbol,
-                'price' => $price,
-                'amount' => $amount,
-                'volume_usd' => $volume,
-                'fee_usd_buyer' => $fee,
-                'fee_usd_seller' => '0',
+                'buy_order_id'   => $buyOrder->id,
+                'sell_order_id'  => $sellOrder->id,
+                'buyer_id'       => $buyer->id,
+                'seller_id'      => $seller->id,
+                'symbol'         => $buyOrder->symbol,
+                'price'          => $price,
+                'amount'         => $amount,
+                'volume_usd'     => $volume,
+                'fee_usd_buyer'  => '0',
+                'fee_usd_seller' => $fee,
             ]);
             
-            //TODO: Dispatch trade executed event
+            // TODO: Dispatch trade executed / OrderMatched event here
             
             return $trade;
         });
