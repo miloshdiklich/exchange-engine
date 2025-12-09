@@ -100,4 +100,81 @@ class OrderService
             'locked_asset' => $data->amount,
         ]);
     }
+    
+    /**
+     * @param User $user
+     * @param int $orderId
+     * @return Order
+     */
+    public function cancelOrder(User $user, int $orderId): Order
+    {
+        return DB::transaction(function () use ($user, $orderId) {
+            // find order belonging to user
+            $order = $this->orders->findByIdForUser($orderId, $user->id);
+            
+            if (! $order) {
+                throw new \RuntimeException('Order not found.');
+            }
+            
+            // lock the order row
+            $order = $this->orders->lock($order);
+            
+            if ($order->status !== OrderStatus::OPEN) {
+                throw new \RuntimeException('Only OPEN orders can be cancelled.');
+            }
+            
+            if ($order->side === OrderSide::BUY) {
+                $this->cancelBuyOrder($order);
+            } else {
+                $this->cancelSellOrder($order);
+            }
+            
+            $order->status = OrderStatus::CANCELLED;
+            $order->locked_usd = '0';
+            $order->locked_asset = '0';
+            $this->orders->save($order);
+            
+            return $order;
+        });
+    }
+    
+    /**
+     * @param Order $order
+     * @return void
+     */
+    private function cancelBuyOrder(Order $order): void
+    {
+        $buyer = $this->users->lockById($order->user_id);
+        $lockedUsd = $order->locked_usd;
+        
+        // refund locked USD to buyer
+        if (bccomp($lockedUsd, '0', 8) > 0) {
+            $buyer->balance = bcadd($buyer->balance, $lockedUsd, 8);
+            $this->users->save($buyer);
+        }
+    }
+    
+    /**
+     * @param Order $order
+     * @return void
+     */
+    private function cancelSellOrder(Order $order): void
+    {
+        $seller = $this->users->lockById($order->user_id);
+        $lockedAmount = $order->locked_asset;
+        
+        if (bccomp($lockedAmount, '0', 8) <= 0) {
+            return;
+        }
+        
+        $asset = $this->assets->lockForUserAndSymbol($seller->id, $order->symbol);
+        
+        if (!$asset) {
+            throw new \RuntimeException('Seller asset not found during order cancellation.');
+        }
+        
+        $asset->amount = bcadd($asset->amount, $lockedAmount, 8);
+        $asset->locked_amount = bcsub($asset->locked_amount, $lockedAmount, 8);
+        $this->assets->save($asset);
+    }
 }

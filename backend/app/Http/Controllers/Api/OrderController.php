@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Contracts\OrderRepositoryInterface;
 use App\Domain\Trading\DTO\PlaceOrderDto;
 use App\Domain\Trading\Enums\OrderStatus;
 use App\Http\Requests\Trading\PlaceOrderRequest;
@@ -14,12 +15,22 @@ use Illuminate\Http\JsonResponse;
 class OrderController extends Controller
 {
     public function __construct(
-        private readonly OrderService $orderService
+        private readonly OrderService $orderService,
+        private readonly OrderRepositoryInterface $orders,
     ) {}
     
     public function index(Request $request): JsonResponse
     {
-        // TODO: Implement order listing
+        $user = $request->user();
+        $symbol = $request->query('symbol');
+        
+        $openOrders = $this->orders->getOpenOrders($symbol);
+        $myOrders = $this->orders->getUserOrders($user->id, $symbol);
+        
+        return response()->json([
+            'open_orders' => $openOrders,
+            'my_orders' => $myOrders,
+        ]);
     }
     
     public function store(PlaceOrderRequest $request)
@@ -31,8 +42,12 @@ class OrderController extends Controller
         return response()->json($result, 201);
     }
     
-    public function cancel()
+    public function cancel(Request $request, int $orderId)
     {
-        // TODO: Implement order cancellation
+        $order = $this->orderService->cancelOrder($request->user(), $orderId);
+        
+        return response()->json([
+            'order' => $order,
+        ]);
     }
 }
