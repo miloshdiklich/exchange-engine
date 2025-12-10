@@ -1,4 +1,7 @@
-@tailwind base;
+@import 'tailwindcss';
+
+@source '../index.html';
+@source '../**/*.{vue,js,ts,jsx,tsx}';
 
 /* optional global body styles */
 body {
