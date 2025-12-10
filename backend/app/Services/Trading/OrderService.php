@@ -10,7 +10,7 @@ use App\Contracts\UserRepositoryInterface;
 use App\Domain\Trading\DTO\PlaceOrderDto;
 use App\Domain\Trading\Enums\OrderSide;
 use App\Domain\Trading\Enums\OrderStatus;
-use App\Domain\Trading\Services\MatchingService;
+use App\Jobs\ProcessOrderMatch;
 use App\Models\Order;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
@@ -18,12 +18,15 @@ use Illuminate\Support\Facades\DB;
 class OrderService
 {
     public function __construct(
-        private readonly UserRepositoryInterface $users,
+        private readonly UserRepositoryInterface  $users,
         private readonly AssetRepositoryInterface $assets,
         private readonly OrderRepositoryInterface $orders,
-        private readonly MatchingService $matcher,
     ) {}
     
+    /**
+     * @param PlaceOrderDto $dto
+     * @return array
+     */
     public function placeOrder(PlaceOrderDto $dto): array
     {
         $result = DB::transaction(function () use ($dto) {
@@ -35,30 +38,15 @@ class OrderService
                 $order = $this->placeSellOrder($user, $dto);
             }
             
-            $trade = $this->matcher->attemptMatch($order);
-            
             return [
                 'order' => $order,
-                'trade' => $trade,
+                'trade' => null,  // trade will be produced asynchronously
             ];
         });
         
-        if ($result['trade']) {
-            $trade = $result['trade'];
-            $trade->loadMissing(['buyOrder', 'sellOrder']);
-            
-            $buyOrder = $result['trade']->buyOrder ?? null;
-            $sellOrder = $result['trade']->sellOrder ?? null;
-            
-            if ($buyOrder && $sellOrder) {
-                // Fire event outside transaction
-                event(new \App\Events\OrderMatched(
-                    trade: $trade,
-                    buyOrder: $buyOrder,
-                    sellOrder: $sellOrder,
-                ));
-            }
-        }
+        // Matching is handled asynchronously by a queued job
+        ProcessOrderMatch::dispatch($result['order']->id);
+        
         return $result;
     }
     
@@ -99,7 +87,7 @@ class OrderService
     {
         $asset = $this->assets->lockForUserAndSymbol($user->id, $data->symbol);
         
-        if ( !$asset || bccomp($asset->amount, $data->amount, 8) < 0) {
+        if (!$asset || bccomp($asset->amount, $data->amount, 8) < 0) {
             throw new \RuntimeException('Insufficient asset balance.');
         }
         
@@ -130,7 +118,7 @@ class OrderService
             // find order belonging to user
             $order = $this->orders->findByIdForUser($orderId, $user->id);
             
-            if (! $order) {
+            if (!$order) {
                 throw new \RuntimeException('Order not found.');
             }
             

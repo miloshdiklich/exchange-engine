@@ -8,6 +8,8 @@ use Illuminate\Support\Collection;
 interface OrderRepositoryInterface
 {
     public function create(array $data): Order;
+
+    public function findById(int $id): ?Order;
     
     public function findByIdForUser(int $id, int $userId): ?Order;
     

@@ -16,6 +16,11 @@ class OrderRepository implements OrderRepositoryInterface
     {
         return Order::query()->create($data);
     }
+
+    public function findById(int $id): ?Order
+    {
+      return Order::query()->find($id);
+    }
     
     public function findByIdForUser(int $id, int $userId): ?Order
     {
