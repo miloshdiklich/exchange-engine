@@ -1,15 +1,19 @@
 <script setup lang="ts">
-import { onMounted, ref, computed } from 'vue'
+import { onMounted, onBeforeUnmount, ref, computed } from 'vue'
 import axios from 'axios'
 import { useRouter } from 'vue-router'
+import createEcho from "../echo.ts";
 
 const router = useRouter()
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost'
 
+// ---- Types ----
 type AssetBalance = {
 	symbol: string
 	amount: string
 }
+
+type OrderStatus = number | string
 
 type Order = {
 	id: number
@@ -17,8 +21,13 @@ type Order = {
 	side: string
 	price: string
 	amount: string
-	status: string
+	status: OrderStatus
 }
+
+// ---- State ----
+const userId = ref<number | null>(null)
+const channelName = ref<string | null>(null)
+const echoInstance = ref<ReturnType<typeof createEcho> | null>(null)
 
 const usdBalance = ref<string>('0.00')
 const assetBalances = ref<AssetBalance[]>([])
@@ -32,7 +41,9 @@ const amount = ref<string>('')
 const loading = ref(false)
 const error = ref('')
 const message = ref('')
+const cancellingId = ref<number | null>(null)
 
+// ---- Helpers ----
 const authHeaders = () => {
 	const token = localStorage.getItem('auth_token')
 	if (!token) {
@@ -50,6 +61,23 @@ const volumePreview = computed(() => {
 	return (p * a).toFixed(2)
 })
 
+const formatStatus = (status: OrderStatus) => {
+	if (typeof status === 'number') {
+		if (status === 1) return 'OPEN'
+		if (status === 2) return 'FILLED'
+		if (status === 3) return 'CANCELLED'
+	}
+	return String(status).toUpperCase()
+}
+
+const isOpen = (order: Order) => {
+	if (typeof order.status === 'number') {
+		return order.status === 1
+	}
+	return String(order.status).toLowerCase() === 'open'
+}
+
+// ---- API calls ----
 const fetchProfile = async () => {
 	try {
 		const { data } = await axios.get(`${API_BASE_URL}/api/profile`, {
@@ -57,7 +85,6 @@ const fetchProfile = async () => {
 		})
 		
 		usdBalance.value = data.balance ?? '0.00'
-		// expect something like: { assets: [{ symbol: 'BTC', amount: '0.01' }, ...] }
 		assetBalances.value = data.assets ?? []
 	} catch (e) {
 		console.error('Error fetching profile', e)
@@ -109,6 +136,97 @@ const placeOrder = async () => {
 	}
 }
 
+const cancelOrder = async (order: Order) => {
+	if (!isOpen(order)) return
+	
+	error.value = ''
+	message.value = ''
+	cancellingId.value = order.id
+	
+	try {
+		await axios.post(
+			`${API_BASE_URL}/api/orders/${order.id}/cancel`,
+			{},
+			{ headers: authHeaders() },
+		)
+		
+		message.value = 'Order cancelled.'
+		await Promise.all([fetchProfile(), fetchOrders()])
+	} catch (e: any) {
+		console.error(e)
+		error.value =
+			e?.response?.data?.message ?? 'Failed to cancel order.'
+	} finally {
+		cancellingId.value = null
+	}
+}
+
+// ---- Realtime setup ----
+const setupRealtime = async () => {
+	const token = localStorage.getItem('auth_token')
+	if (!token) {
+		console.warn('[Realtime] No token, aborting realtime setup')
+		return
+	}
+	
+	console.log('[Realtime] Starting setupRealtime…')
+	
+	// Get current user id from /api/me
+	try {
+		console.log('[Realtime] Fetching /api/me …')
+		const meResponse = await axios.get(`${API_BASE_URL}/api/me`, {
+			headers: authHeaders(),
+		})
+		
+		console.log('[Realtime] /api/me raw response:', meResponse.data)
+		
+		const payload = meResponse.data
+		
+		const extractedId = payload.user?.id
+		
+		userId.value = extractedId ?? null
+		
+		console.log('[Realtime] /api/me OK, user id =', userId.value)
+	} catch (e) {
+		console.error('[Realtime] Error fetching /api/me', e)
+		return
+	}
+	
+	if (!userId.value) {
+		console.warn('[Realtime] No userId, aborting realtime setup')
+		return
+	}
+	
+	// Create Echo instance with this user's token
+	echoInstance.value = createEcho(token)
+	
+	const name = `user.${userId.value}`
+	channelName.value = name
+	
+	console.log('[Realtime] Subscribing to channel:', name)
+	
+	const channel = echoInstance.value.private(name)
+	
+	// Fires when subscription succeeds
+	// @ts-ignore
+	channel.subscribed(() => {
+		console.log('[Realtime] SUBSCRIBED to', name)
+	})
+	
+	// Fires when subscription fails
+	// @ts-ignore
+	channel.error((err: any) => {
+		console.error('[Realtime] Channel error on', name, err)
+	})
+	
+	// Event listener
+	channel.listen('.OrderMatched', async (payload: any) => {
+		console.log('[Realtime] OrderMatched EVENT RECEIVED:', payload)
+		await Promise.all([fetchProfile(), fetchOrders()])
+	})
+}
+
+// ---- Lifecycle ----
 onMounted(async () => {
 	const token = localStorage.getItem('auth_token')
 	if (!token) {
@@ -118,6 +236,13 @@ onMounted(async () => {
 	
 	await fetchProfile()
 	await fetchOrders()
+	await setupRealtime()
+})
+
+onBeforeUnmount(() => {
+	if (echoInstance.value && channelName.value) {
+		echoInstance.value.leave(channelName.value) // leave "user.{id}"
+	}
 })
 </script>
 
@@ -140,11 +265,11 @@ onMounted(async () => {
             >
               No assets
             </span>
-						<span
-							v-for="asset in assetBalances"
-							:key="asset.symbol"
-							class="inline-flex items-center gap-1 bg-slate-900 px-2 py-1 rounded-md"
-						>
+				<span
+					v-for="asset in assetBalances"
+					:key="asset.symbol"
+					class="inline-flex items-center gap-1 bg-slate-900 px-2 py-1 rounded-md"
+				>
               <span class="font-mono text-xs">{{ asset.symbol }}</span>
               <span class="text-slate-300 text-xs">{{ asset.amount }}</span>
             </span>
@@ -259,9 +384,18 @@ onMounted(async () => {
 								@ {{ order.price }}
 							</p>
 							<p class="text-[11px] text-slate-400">
-								Status: {{ order.status }}
+								Status: {{ formatStatus(order.status) }}
 							</p>
 						</div>
+						
+						<button
+							v-if="isOpen(order)"
+							class="text-[11px] px-2 py-1 rounded-md border border-red-500 text-red-300 hover:bg-red-500/10 disabled:opacity-50"
+							:disabled="cancellingId === order.id"
+							@click="cancelOrder(order)"
+						>
+							{{ cancellingId === order.id ? 'Cancelling…' : 'Cancel' }}
+						</button>
 					</li>
 				</ul>
 			</section>

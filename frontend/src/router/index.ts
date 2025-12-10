@@ -13,6 +13,7 @@ const routes: RouteRecordRaw[] = [
     path: '/',
     name: 'trading',
     component: TradingView,
+    meta: { requiresAuth: true },
   },
   {
     path: '/:pathMatch(.*)*',
@@ -23,6 +24,20 @@ const routes: RouteRecordRaw[] = [
 const router = createRouter({
   history: createWebHistory(),
   routes,
+})
+
+router.beforeEach((to, _from, next) => {
+  const token = localStorage.getItem('auth_token')
+  
+  if (to.meta.requiresAuth && !token) {
+    return next({ name: 'login' })
+  }
+  
+  if (to.name === 'login' && token) {
+    return next({ name: 'trading' })
+  }
+  
+  next()
 })
 
 export default router

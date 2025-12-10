@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useAuth } from './composables/useAuth'
+const { logout } = useAuth()
 </script>
 
 <template>
@@ -9,13 +11,13 @@
 					Match Exchange Engine
 				</h1>
 				
-				<RouterLink
+				<button
 					v-if="$route.name !== 'login'"
-					to="/login"
+					@click="logout"
 					class="text-sm text-slate-300 hover:text-white"
 				>
 					Logout
-				</RouterLink>
+				</button>
 			</div>
 		</header>
 		
